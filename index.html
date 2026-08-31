@@ -129,6 +129,35 @@
   .footer-note{margin-top:auto;padding-top:16px;font-size:11px;color:#4d5563;line-height:1.5;}
   .footer-note a{color:#5b6472;}
 
+  /* Chains & residues */
+  .muted-note{font-size:12px;color:var(--muted);}
+  .chain-block{
+    border:1px solid var(--panel-border);border-radius:8px;margin-bottom:8px;
+    overflow:hidden;background:var(--input-bg);
+  }
+  .chain-header{display:flex;align-items:center;gap:8px;padding:8px 10px;}
+  .chain-title{font-size:13px;font-weight:600;flex:1;}
+  .chain-count{font-size:11px;color:var(--muted);white-space:nowrap;}
+  .chain-expand{
+    width:100%;background:transparent;border:none;border-top:1px solid var(--panel-border);
+    color:var(--accent);font-size:11.5px;padding:6px;text-align:center;
+  }
+  .chain-expand:hover{background:rgba(255,255,255,.04);}
+  .residue-grid{
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(30px,1fr));gap:4px;
+    padding:8px;max-height:180px;overflow-y:auto;background:var(--bg);
+  }
+  .residue-grid[hidden]{display:none;}
+  .res-chip{
+    background:var(--input-bg);border:1px solid var(--panel-border);color:var(--muted);
+    font-size:10px;padding:4px 2px;border-radius:5px;text-align:center;transition:all .1s;
+  }
+  .res-chip.active{background:rgba(79,140,255,.18);border-color:var(--accent);color:var(--text);}
+  .res-chip:hover{border-color:var(--accent);}
+  .chain-block.chain-off .chain-title,
+  .chain-block.chain-off .chain-count{opacity:.4;}
+  .chain-block.chain-off .residue-grid{opacity:.35;pointer-events:none;}
+
   /* Viewer */
   #viewerWrap{flex:1;position:relative;}
   #viewport{width:100%;height:100%;}
@@ -204,6 +233,17 @@
     </div>
 
     <div class="section">
+      <span class="section-label">Chains &amp; residues</span>
+      <div class="btn-row" id="chainsToolbar" style="margin-bottom:9px;display:none;">
+        <button class="btn-secondary" id="selectAllChainsBtn">Select all</button>
+        <button class="btn-secondary" id="deselectAllChainsBtn">Deselect all</button>
+      </div>
+      <div id="chainsList">
+        <div class="muted-note">Load a structure to see its chains.</div>
+      </div>
+    </div>
+
+    <div class="section">
       <div class="row-check">
         <label for="showHetero">Show ligands / waters</label>
         <label class="switch">
@@ -261,7 +301,15 @@
     rep: "cartoon",
     color: "chainid",
     showHetero: true,
-    component: null
+    component: null,
+    chains: {}
+  };
+
+  var RESIDUE_1_LETTER = {
+    ALA:"A",ARG:"R",ASN:"N",ASP:"D",CYS:"C",GLN:"Q",GLU:"E",GLY:"G",HIS:"H",
+    ILE:"I",LEU:"L",LYS:"K",MET:"M",PHE:"F",PRO:"P",SER:"S",THR:"T",TRP:"W",
+    TYR:"Y",VAL:"V",
+    A:"A",C:"C",G:"G",U:"U",DA:"A",DC:"C",DG:"G",DT:"T",DU:"U"
   };
 
   var pdbInput = document.getElementById("pdbInput");
@@ -271,35 +319,193 @@
   var hint = document.getElementById("hint");
   var infoSection = document.getElementById("infoSection");
   var infoEl = document.getElementById("info");
+  var chainsList = document.getElementById("chainsList");
+  var chainsToolbar = document.getElementById("chainsToolbar");
 
   function setStatus(msg, kind){
     statusEl.textContent = msg || "";
     statusEl.className = kind || "";
   }
 
+  // Compress a set of residue numbers into "5" / "9-12" range strings
+  function compressRanges(numSet){
+    var sorted = Array.prototype.slice.call(numSet).sort(function(a,b){ return a-b; });
+    var ranges = [], start = null, prev = null;
+    sorted.forEach(function(n){
+      if (start === null){ start = n; prev = n; return; }
+      if (n === prev + 1){ prev = n; return; }
+      ranges.push(start === prev ? "" + start : start + "-" + prev);
+      start = n; prev = n;
+    });
+    if (start !== null) ranges.push(start === prev ? "" + start : start + "-" + prev);
+    return ranges;
+  }
+
+  // Build an NGL selection expression covering every residue/chain the user has turned off
+  function buildExclusionSele(){
+    var frags = [];
+    Object.keys(state.chains).forEach(function(cn){
+      var c = state.chains[cn];
+      if (c.off){
+        frags.push(":" + cn);
+      } else if (c.resDeselected.size){
+        var frag = compressRanges(c.resDeselected).map(function(r){ return r + ":" + cn; }).join(" or ");
+        frags.push("(" + frag + ")");
+      }
+    });
+    return frags.join(" or ");
+  }
+
+  function fullyOffChainSele(){
+    var offChains = Object.keys(state.chains).filter(function(cn){ return state.chains[cn].off; });
+    return offChains.map(function(cn){ return ":" + cn; }).join(" or ");
+  }
+
   function applyRepresentation(){
     if (!state.component) return;
     state.component.removeAllRepresentations();
 
-    var mainSel = state.showHetero ? "polymer" : "polymer";
+    var exclusion = buildExclusionSele();
+    var mainSel = exclusion ? "polymer and not (" + exclusion + ")" : "polymer";
     state.component.addRepresentation(state.rep, {
       sele: mainSel,
       color: state.color
     });
 
     if (state.showHetero){
+      var offChains = fullyOffChainSele();
+      var heteroSel = "hetero and not water" + (offChains ? " and not (" + offChains + ")" : "");
+      var waterSel = "water" + (offChains ? " and not (" + offChains + ")" : "");
       state.component.addRepresentation("ball+stick", {
-        sele: "hetero and not water",
+        sele: heteroSel,
         color: state.color
       });
       state.component.addRepresentation("spacefill", {
-        sele: "water",
+        sele: waterSel,
         color: state.color,
         scale: 0.25,
         opacity: 0.6
       });
     }
   }
+
+  var applyTimer = null;
+  function debouncedApply(){
+    clearTimeout(applyTimer);
+    applyTimer = setTimeout(applyRepresentation, 120);
+  }
+
+  function buildChainsUI(structure){
+    state.chains = {};
+    chainsList.innerHTML = "";
+    var seen = {};
+    var chainData = [];
+
+    structure.eachChain(function(cp){
+      var cn = cp.chainname || cp.chainid;
+      if (seen[cn]) return;
+      var residues = [];
+      cp.eachResidue(function(rp){
+        if (rp.isProtein() || rp.isNucleic()){
+          residues.push({ resno: rp.resno, resname: rp.resname });
+        }
+      });
+      if (!residues.length) return;
+      seen[cn] = true;
+      state.chains[cn] = { off: false, resDeselected: new Set() };
+      chainData.push({ name: cn, residues: residues });
+    });
+
+    if (!chainData.length){
+      chainsList.innerHTML = '<div class="muted-note">No polymer chains found in this structure.</div>';
+      chainsToolbar.style.display = "none";
+      return;
+    }
+
+    chainsToolbar.style.display = "flex";
+
+    chainData.forEach(function(chain){
+      var block = document.createElement("div");
+      block.className = "chain-block";
+      block.dataset.chain = chain.name;
+
+      var header = document.createElement("div");
+      header.className = "chain-header";
+      header.innerHTML =
+        '<label class="switch">' +
+          '<input type="checkbox" checked class="chain-check" data-chain="' + chain.name + '">' +
+          '<span class="slider"></span>' +
+        '</label>' +
+        '<span class="chain-title">Chain ' + chain.name + '</span>' +
+        '<span class="chain-count">' + chain.residues.length + ' res</span>';
+      block.appendChild(header);
+
+      var expandBtn = document.createElement("button");
+      expandBtn.className = "chain-expand";
+      expandBtn.dataset.chain = chain.name;
+      expandBtn.textContent = "Show residues";
+      block.appendChild(expandBtn);
+
+      var grid = document.createElement("div");
+      grid.className = "residue-grid";
+      grid.hidden = true;
+      chain.residues.forEach(function(r){
+        var chip = document.createElement("button");
+        chip.className = "res-chip active";
+        chip.dataset.chain = chain.name;
+        chip.dataset.resno = r.resno;
+        chip.title = r.resname + " " + r.resno;
+        chip.textContent = (RESIDUE_1_LETTER[r.resname] || "?") + r.resno;
+        grid.appendChild(chip);
+      });
+      block.appendChild(grid);
+
+      chainsList.appendChild(block);
+    });
+  }
+
+  function setAllChains(offState){
+    Object.keys(state.chains).forEach(function(cn){
+      state.chains[cn].off = offState;
+      state.chains[cn].resDeselected.clear();
+    });
+    chainsList.querySelectorAll(".chain-check").forEach(function(cb){ cb.checked = !offState; });
+    chainsList.querySelectorAll(".chain-block").forEach(function(b){ b.classList.toggle("chain-off", offState); });
+    chainsList.querySelectorAll(".res-chip").forEach(function(c){ c.classList.toggle("active", !offState); });
+    applyRepresentation();
+  }
+
+  chainsList.addEventListener("change", function(e){
+    if (!e.target.classList.contains("chain-check")) return;
+    var cn = e.target.dataset.chain;
+    state.chains[cn].off = !e.target.checked;
+    var block = chainsList.querySelector('.chain-block[data-chain="' + cn + '"]');
+    if (block) block.classList.toggle("chain-off", state.chains[cn].off);
+    applyRepresentation();
+  });
+
+  chainsList.addEventListener("click", function(e){
+    var expandBtn = e.target.closest(".chain-expand");
+    if (expandBtn){
+      var grid = expandBtn.nextElementSibling;
+      var isHidden = grid.hidden;
+      grid.hidden = !isHidden;
+      expandBtn.textContent = isHidden ? "Hide residues" : "Show residues";
+      return;
+    }
+    var chip = e.target.closest(".res-chip");
+    if (chip){
+      var cn = chip.dataset.chain;
+      var resno = parseInt(chip.dataset.resno, 10);
+      var set = state.chains[cn].resDeselected;
+      if (set.has(resno)){ set.delete(resno); chip.classList.add("active"); }
+      else { set.add(resno); chip.classList.remove("active"); }
+      debouncedApply();
+    }
+  });
+
+  document.getElementById("selectAllChainsBtn").addEventListener("click", function(){ setAllChains(false); });
+  document.getElementById("deselectAllChainsBtn").addEventListener("click", function(){ setAllChains(true); });
 
   function showInfo(structure, id){
     var chains = {};
@@ -334,6 +540,7 @@
     stage.loadFile("rcsb://" + id)
       .then(function(component){
         state.component = component;
+        buildChainsUI(component.structure);
         applyRepresentation();
         stage.autoView();
         hint.style.display = "none";
@@ -345,6 +552,9 @@
         setStatus("Couldn't load \"" + id + "\" — check the PDB ID and try again.", "error");
         infoSection.style.display = "none";
         hint.style.display = "flex";
+        state.chains = {};
+        chainsList.innerHTML = '<div class="muted-note">Load a structure to see its chains.</div>';
+        chainsToolbar.style.display = "none";
       })
       .then(function(){
         loadBtn.disabled = false;
