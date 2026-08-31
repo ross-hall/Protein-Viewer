@@ -146,7 +146,9 @@
   .residue-grid{
     display:grid;grid-template-columns:repeat(auto-fill,minmax(30px,1fr));gap:4px;
     padding:8px;max-height:180px;overflow-y:auto;background:var(--bg);
+    user-select:none;touch-action:pan-y;
   }
+  .res-chip{touch-action:none;}
   .residue-grid[hidden]{display:none;}
   .res-chip{
     background:var(--input-bg);border:1px solid var(--panel-border);color:var(--muted);
@@ -329,7 +331,7 @@
 
   // Compress a set of residue numbers into "5" / "9-12" range strings
   function compressRanges(numSet){
-    var sorted = Array.prototype.slice.call(numSet).sort(function(a,b){ return a-b; });
+    var sorted = Array.from(numSet).sort(function(a,b){ return a-b; });
     var ranges = [], start = null, prev = null;
     sorted.forEach(function(n){
       if (start === null){ start = n; prev = n; return; }
@@ -491,18 +493,56 @@
       var isHidden = grid.hidden;
       grid.hidden = !isHidden;
       expandBtn.textContent = isHidden ? "Hide residues" : "Show residues";
-      return;
-    }
-    var chip = e.target.closest(".res-chip");
-    if (chip){
-      var cn = chip.dataset.chain;
-      var resno = parseInt(chip.dataset.resno, 10);
-      var set = state.chains[cn].resDeselected;
-      if (set.has(resno)){ set.delete(resno); chip.classList.add("active"); }
-      else { set.add(resno); chip.classList.remove("active"); }
-      debouncedApply();
     }
   });
+
+  // Drag-to-select/deselect across residue chips: the first chip touched sets the
+  // mode (select or deselect) and every other chip dragged over adopts that mode.
+  var dragMode = null; // true = selecting, false = deselecting
+  var dragTouched = null;
+
+  function setChipState(chip, active){
+    var cn = chip.dataset.chain;
+    var resno = parseInt(chip.dataset.resno, 10);
+    var set = state.chains[cn].resDeselected;
+    if (active){ set.delete(resno); chip.classList.add("active"); }
+    else { set.add(resno); chip.classList.remove("active"); }
+  }
+
+  function dragTouch(chip){
+    var key = chip.dataset.chain + ":" + chip.dataset.resno;
+    if (dragTouched.has(key)) return;
+    dragTouched.add(key);
+    setChipState(chip, dragMode);
+    debouncedApply();
+  }
+
+  chainsList.addEventListener("pointerdown", function(e){
+    var chip = e.target.closest(".res-chip");
+    if (!chip) return;
+    e.preventDefault();
+    dragMode = !chip.classList.contains("active");
+    dragTouched = new Set();
+    dragTouch(chip);
+  });
+
+  document.addEventListener("pointermove", function(e){
+    if (dragMode === null) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    var chip = el && el.closest && el.closest(".res-chip");
+    if (chip) dragTouch(chip);
+  });
+
+  function endDrag(){
+    if (dragMode !== null){
+      dragMode = null;
+      dragTouched = null;
+      applyRepresentation();
+    }
+  }
+  document.addEventListener("pointerup", endDrag);
+  document.addEventListener("pointercancel", endDrag);
+  window.addEventListener("blur", endDrag);
 
   document.getElementById("selectAllChainsBtn").addEventListener("click", function(){ setAllChains(false); });
   document.getElementById("deselectAllChainsBtn").addEventListener("click", function(){ setAllChains(true); });
