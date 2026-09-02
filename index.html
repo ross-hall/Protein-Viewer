@@ -406,7 +406,12 @@
     };
   }
 
-  function renderSketch(){
+  // Sketch mode doesn't need to track rotation live — instead, once the view settles,
+  // grab a still frame. NGL progressively refines (more samples) the moment it stops
+  // moving, so waiting a beat before capturing gives us a much less jagged result than
+  // grabbing every in-motion frame during a drag.
+  var snapshotTimer = null;
+  function captureSnapshot(){
     if (!sketchEnabled) return;
     if (!sketch) sketch = initSketch();
     if (!sketch) return;
@@ -425,21 +430,25 @@
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  function onResize(){
-    if (sketchEnabled) renderSketch();
+  function scheduleSnapshot(delay){
+    if (!sketchEnabled) return;
+    clearTimeout(snapshotTimer);
+    snapshotTimer = setTimeout(captureSnapshot, delay);
   }
 
-  stage.viewer.signals.rendered.add(renderSketch);
+  function onResize(){
+    if (sketchEnabled) scheduleSnapshot(150);
+  }
+
+  // NGL auto-boosts its sample level ~500ms after motion stops, then restores it; wait
+  // slightly past that so we capture the refined frame instead of racing it.
+  stage.viewer.signals.rendered.add(function(){ scheduleSnapshot(650); });
 
   sketchToggle.addEventListener("change", function(e){
     sketchEnabled = e.target.checked;
     sketchCanvas.classList.toggle("active", sketchEnabled);
-    if (sketchEnabled){
-      bgToggle.disabled = true;
-    } else {
-      bgToggle.disabled = false;
-    }
-    stage.viewer.requestRender();
+    bgToggle.disabled = sketchEnabled;
+    if (sketchEnabled) scheduleSnapshot(0);
   });
 
   var state = {
