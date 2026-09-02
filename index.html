@@ -419,10 +419,15 @@
     var srcCanvas = stage.viewer.renderer.domElement;
     var w = srcCanvas.width, h = srcCanvas.height;
     if (!w || !h) return;
-    if (sketchCanvas.width !== w || sketchCanvas.height !== h){
-      sketchCanvas.width = w;
-      sketchCanvas.height = h;
-      gl.viewport(0, 0, w, h);
+    // Render the sketch pass at a higher resolution than the source and let the browser's
+    // own downscale filtering smooth the ink lines, instead of showing them stair-stepped
+    // at a 1:1 pixel mapping.
+    var SS = 2;
+    var rw = w * SS, rh = h * SS;
+    if (sketchCanvas.width !== rw || sketchCanvas.height !== rh){
+      sketchCanvas.width = rw;
+      sketchCanvas.height = rh;
+      gl.viewport(0, 0, rw, rh);
     }
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcCanvas);
