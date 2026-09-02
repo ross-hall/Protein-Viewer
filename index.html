@@ -111,6 +111,21 @@
   .switch input:checked + .slider{background:var(--accent);border-color:var(--accent);}
   .switch input:checked + .slider:before{transform:translateX(16px);background:#fff;}
 
+  #sketchControls{margin-top:10px;padding-top:10px;border-top:1px solid var(--panel-border);}
+  .slider-row{margin-bottom:10px;}
+  .slider-row:last-child{margin-bottom:0;}
+  .slider-row-label{
+    display:flex;justify-content:space-between;font-size:12.5px;color:var(--text);margin-bottom:5px;
+  }
+  .slider-row-label span:last-child{color:var(--muted);}
+  input[type="range"]{
+    width:100%;accent-color:var(--accent);height:4px;background:var(--input-bg);
+  }
+  input[type="color"]{
+    width:100%;height:30px;border:1px solid var(--panel-border);border-radius:8px;
+    background:var(--input-bg);padding:2px;cursor:pointer;
+  }
+
   .btn-row{display:flex;gap:6px;}
   .btn-secondary{
     flex:1;background:var(--input-bg);border:1px solid var(--panel-border);color:var(--text);
@@ -281,6 +296,20 @@
           <span class="slider"></span>
         </label>
       </div>
+      <div id="sketchControls" style="display:none;">
+        <div class="slider-row">
+          <div class="slider-row-label"><span>Line thickness</span><span id="lineThicknessValue">1.0px</span></div>
+          <input type="range" id="lineThickness" min="0.5" max="3" step="0.1" value="1">
+        </div>
+        <div class="slider-row">
+          <div class="slider-row-label"><span>Shades of gray</span><span id="grayLevelsValue">5 shades</span></div>
+          <input type="range" id="grayLevels" min="2" max="8" step="1" value="5">
+        </div>
+        <div class="slider-row">
+          <div class="slider-row-label"><span>Sketch color</span></div>
+          <input type="color" id="sketchColor" value="#ffffff">
+        </div>
+      </div>
     </div>
 
     <div class="section">
@@ -334,7 +363,8 @@
 
     var fragSrc =
       "precision mediump float;" +
-      "uniform sampler2D uTex; uniform vec2 uTexel; varying vec2 vUv;" +
+      "uniform sampler2D uTex; uniform vec2 uTexel; uniform float uLevels; uniform vec3 uColor;" +
+      "varying vec2 vUv;" +
       "float lum(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }" +
       "void main(){" +
       "  vec2 uv = vUv;" +
@@ -351,15 +381,13 @@
       "  float gx = -tl - 2.0*l - bl + tr + 2.0*r + br;" +
       "  float gy = -tl - 2.0*t - tr + bl + 2.0*b + br;" +
       "  float edge = sqrt(gx*gx + gy*gy);" +
+      "  float levels = max(uLevels, 2.0);" +
       "  float shade;" +
-      "  if (centerTexel.a < 0.5) shade = 1.0;" +
-      "  else if (c > 0.88) shade = 1.0;" +
-      "  else if (c > 0.66) shade = 0.82;" +
-      "  else if (c > 0.46) shade = 0.60;" +
-      "  else if (c > 0.26) shade = 0.38;" +
-      "  else shade = 0.18;" +
+      "  if (centerTexel.a < 0.5){ shade = 1.0; }" +
+      "  else { float idx = min(floor(c * levels), levels - 1.0); shade = idx / (levels - 1.0); }" +
       "  float ink = smoothstep(0.3, 0.55, edge);" +
-      "  vec3 col = mix(vec3(shade), vec3(0.05), ink);" +
+      "  vec3 base = mix(vec3(0.03), uColor, shade);" +
+      "  vec3 col = mix(base, vec3(0.03), ink);" +
       "  gl_FragColor = vec4(col, 1.0);" +
       "}";
 
@@ -402,7 +430,9 @@
 
     return {
       gl: gl,
-      texelLoc: gl.getUniformLocation(program, "uTexel")
+      texelLoc: gl.getUniformLocation(program, "uTexel"),
+      levelsLoc: gl.getUniformLocation(program, "uLevels"),
+      colorLoc: gl.getUniformLocation(program, "uColor")
     };
   }
 
@@ -431,7 +461,12 @@
     }
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, srcCanvas);
-    gl.uniform2f(sketch.texelLoc, 1 / w, 1 / h);
+    // Line thickness widens the Sobel sampling offset, so the same edge gets detected
+    // across a wider band of pixels rather than changing the shader itself.
+    var thickness = parseFloat(lineThicknessInput.value) || 1;
+    gl.uniform2f(sketch.texelLoc, (thickness / w), (thickness / h));
+    gl.uniform1f(sketch.levelsLoc, parseFloat(grayLevelsInput.value) || 5);
+    gl.uniform3f(sketch.colorLoc, sketchColorRGB[0], sketchColorRGB[1], sketchColorRGB[2]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
@@ -449,11 +484,38 @@
   // slightly past that so we capture the refined frame instead of racing it.
   stage.viewer.signals.rendered.add(function(){ scheduleSnapshot(650); });
 
+  var lineThicknessInput = document.getElementById("lineThickness");
+  var grayLevelsInput = document.getElementById("grayLevels");
+  var sketchColorInput = document.getElementById("sketchColor");
+  var lineThicknessValue = document.getElementById("lineThicknessValue");
+  var grayLevelsValue = document.getElementById("grayLevelsValue");
+  var sketchColorRGB = [1, 1, 1];
+  var sketchControls = document.getElementById("sketchControls");
+
+  function hexToRgb01(hex){
+    var n = parseInt(hex.replace("#", ""), 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+
   sketchToggle.addEventListener("change", function(e){
     sketchEnabled = e.target.checked;
     sketchCanvas.classList.toggle("active", sketchEnabled);
     bgToggle.disabled = sketchEnabled;
+    sketchControls.style.display = sketchEnabled ? "block" : "none";
     if (sketchEnabled) scheduleSnapshot(0);
+  });
+
+  lineThicknessInput.addEventListener("input", function(){
+    lineThicknessValue.textContent = parseFloat(lineThicknessInput.value).toFixed(1) + "px";
+    scheduleSnapshot(0);
+  });
+  grayLevelsInput.addEventListener("input", function(){
+    grayLevelsValue.textContent = grayLevelsInput.value + " shades";
+    scheduleSnapshot(0);
+  });
+  sketchColorInput.addEventListener("input", function(){
+    sketchColorRGB = hexToRgb01(sketchColorInput.value);
+    scheduleSnapshot(0);
   });
 
   var state = {
